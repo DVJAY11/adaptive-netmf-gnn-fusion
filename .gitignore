@@ -1,0 +1,15 @@
+.venv/
+__pycache__/
+*.pyc
+.DS_Store
+data/
+cache/
+cache_*/
+results/
+results_smoke/
+.matplotlib-cache/
+.docx-qa/
+.pptx-build/
+.pptx-qa/
+archive/
+artifacts/*.inspect.ndjson

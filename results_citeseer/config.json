@@ -1,0 +1,36 @@
+{
+  "dataset": "CiteSeer",
+  "data_root": "data",
+  "output_dir": "results_citeseer",
+  "cache_dir": "cache_citeseer",
+  "budgets": [
+    5,
+    10,
+    20
+  ],
+  "seeds": [
+    42,
+    43,
+    44,
+    45,
+    46
+  ],
+  "edge_drop_rates": [
+    0.0
+  ],
+  "epochs": 200,
+  "patience": 30,
+  "hidden_channels": 64,
+  "dropout": 0.5,
+  "lr": 0.01,
+  "weight_decay": 0.0005,
+  "netmf_dim": 128,
+  "netmf_window": 5,
+  "device": "auto",
+  "smoke": false,
+  "resolved_device": "mps",
+  "num_nodes": 3327,
+  "num_edges": 9104,
+  "num_features": 3703,
+  "num_classes": 6
+}
