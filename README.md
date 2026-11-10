@@ -8,6 +8,17 @@ This project studies whether NetMF and graph neural networks make complementary 
 
 Does adaptive prediction fusion improve node classification compared with a standard GCN and the simpler approach of adding NetMF embeddings to the GCN input features?
 
+## Datasets
+
+The experiments use two citation-network datasets from the Planetoid collection. Each node is a research paper, each edge is a citation, the node features represent words in the paper, and the target is the paper's topic.
+
+| Dataset | Nodes | Edges | Features | Classes | Download |
+|---|---:|---:|---:|---:|---|
+| Cora | 2,708 | 10,556 | 1,433 | 7 | [Download Cora (`.tgz`)](https://linqs-data.soe.ucsc.edu/public/lbc/cora.tgz) |
+| CiteSeer | 3,327 | 9,104 | 3,703 | 6 | [Download CiteSeer (`.tgz`)](https://linqs-data.soe.ucsc.edu/public/lbc/citeseer.tgz) |
+
+The experiment scripts use [PyTorch Geometric's Planetoid loader](https://pytorch-geometric.readthedocs.io/en/stable/generated/torch_geometric.datasets.Planetoid.html), so manual downloading is not required. The requested dataset is downloaded automatically on the first run and stored under `data/`.
+
 ## Main findings
 
 The experiments use five random seeds and report mean test accuracy.
