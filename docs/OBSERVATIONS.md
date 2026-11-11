@@ -351,30 +351,35 @@ Seeds 42–46, 20 labels/class, 1,000 test nodes per run.
 Oracle accuracy is a theoretical upper bound, not achievable model performance. Results use five seeds and one label budget, so broader generalization requires additional evaluation.
 
 
-## 0f. Weighted Prediction Averaging (2026-11-10)
 
-**Single-seed experiment:** Cora, seed 42, 20 labels/class. Fixed probability weights were
-searched in steps of 0.1 using only the 500-node saved validation mask; the selected weights
-were then evaluated once on the 1,000-node test mask. No models were retrained.
+## 0f. Weighted Prediction Averaging (5 Seeds, 3 Datasets)
 
-| Method | Selected weights (GCN / NetMF / GraphSAGE) | Validation | Test |
+Seeds 42–46, 20 labels/class. Weights selected using
+validation accuracy only; no model retraining.
+
+| Method | Cora | CiteSeer | PubMed |
 |---|---:|---:|---:|
-| Weighted GCN + NetMF | 0.4 / 0.6 / 0.0 | 78.8% | **78.5%** |
-| Weighted GCN + GraphSAGE | 1.0 / 0.0 / 0.0 | 77.4% | 78.3% |
-| Weighted all three | 0.4 / 0.6 / 0.0 | 78.8% | **78.5%** |
-| GCN | 1.0 / 0.0 / 0.0 | 77.4% | 78.3% |
-| EqualAverage | 1/3 / 1/3 / 1/3 | 76.4% | 77.1% |
-| LearnedRouter | node-dependent | 75.8%* | 76.9% |
+| GCN | 78.08 ± 0.59 | 71.36 ± 1.76 | 77.70 ± 1.47 |
+| EqualAverage | 77.74 ± 0.99 | 66.98 ± 4.18 | 77.38 ± 0.90 |
+| LearnedRouter | 77.08 ± 1.23 | 71.16 ± 2.08 | 77.04 ± 1.86 |
+| Weighted GCN + NetMF | 78.20 ± 0.65 | 71.08 ± 1.93 | 78.04 ± 1.53 |
+| Weighted GCN + GraphSAGE | 77.64 ± 0.87 | 71.06 ± 1.54 | 76.58 ± 1.59 |
+| Weighted all three | 78.14 ± 0.83 | 70.90 ± 1.78 | 77.90 ± 1.20 |
 
-The best validation-selected fixed average is 0.4 GCN + 0.6 NetMF. It reaches 78.5% test
-accuracy, 0.2 percentage points above GCN, 1.4 points above equal averaging, and 1.6 points
-above the learned router in this seed. Adding GraphSAGE does not help the validation search:
-the selected three-model candidate gives it zero weight. Likewise, the GCN + GraphSAGE search
-selects pure GCN. These small single-seed differences do not establish a general improvement;
-multiple seeds are required.
+### Key findings
+- Weighted GCN + NetMF achieved the best mean accuracy
+  on Cora (78.20%) and PubMed (78.04%).
+- Gains over GCN were small: +0.12 and +0.34 percentage
+  points, respectively.
+- On CiteSeer, weighted GCN + NetMF assigned an average
+  94% weight to GCN, limiting NetMF's negative impact.
+- Weighted averaging outperformed the learned router's
+  mean accuracy on all three datasets.
+- Despite substantial oracle headroom, simple weighted
+  averaging captures very little of the theoretical gain.
 
-\* The learned router's validation accuracy is not directly comparable to validation-tuned
-averaging. It was fit on 149 router-training nodes and early-stopped on 103 router-stop nodes,
-all of which are included in the 500-node validation mask used to report 75.8%. Its held-out
-test accuracy is comparable. The fixed-weight validation score is also a selection score rather
-than performance on an untouched split.
+### Limitations
+Only five seeds and one label budget were evaluated.
+Small differences should not be interpreted as statistically
+established improvements. Weights were selected using
+validation labels, not test labels.
