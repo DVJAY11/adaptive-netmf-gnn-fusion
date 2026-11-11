@@ -383,3 +383,61 @@ Only five seeds and one label budget were evaluated.
 Small differences should not be interpreted as statistically
 established improvements. Weights were selected using
 validation labels, not test labels.
+
+
+## 0g. Easy vs. Difficult Nodes (5 Seeds, 3 Datasets)
+
+Seeds 42–46, 20 labels/class. Within each seed, the 1,000 test nodes were ranked by
+GCN's maximum predicted probability and split into low- (334 nodes), medium- (333), and
+high-confidence (333) groups. Labels were not used to form the groups. Weighted GCN + NetMF
+uses the Task 3 weights selected separately on each seed's validation split.
+
+| Dataset | Low: GCN | Low: weighted (Δ) | Medium: GCN | Medium: weighted (Δ) | High: GCN | High: weighted (Δ) |
+|---|---:|---:|---:|---:|---:|---:|
+| Cora | 58.50 ± 3.69 | 58.92 ± 4.17 (+0.42) | 83.48 ± 1.63 | 83.30 ± 1.68 (−0.18) | 92.31 ± 3.82 | 92.43 ± 3.69 (+0.12) |
+| CiteSeer | 52.10 ± 4.33 | 51.38 ± 4.67 (−0.72) | 76.16 ± 2.36 | 76.04 ± 2.31 (−0.12) | 85.89 ± 1.62 | 85.89 ± 1.62 (+0.00) |
+| PubMed | 61.44 ± 2.19 | 62.16 ± 4.13 (+0.72) | 81.86 ± 2.73 | 82.04 ± 2.53 (+0.18) | 89.85 ± 1.23 | 89.97 ± 0.96 (+0.12) |
+
+Accuracies and parenthesized differences from GCN are percentage points, mean ± sample
+standard deviation over five seeds. The confidence grouping behaves as intended: GCN accuracy
+is 52–61% in the low group and 86–92% in the high group. Weighted averaging does **not** show
+a consistent special benefit on low-confidence nodes: its low-group change is +0.42 points on
+Cora, −0.72 on CiteSeer, and +0.72 on PubMed, all small relative to seed variation.
+
+NetMF alone is below GCN in every confidence group (low-group gaps: −9.76 points on Cora,
+−25.93 on CiteSeer, and −7.07 on PubMed). GraphSAGE is also 4.91–5.27 points below GCN in
+the low group. The learned router trails GCN there by 1.14–2.16 points. Thus, individual
+alternative experts can rescue particular low-confidence errors (section 0h), but applying them
+broadly to that entire group does not improve mean accuracy.
+
+
+## 0h. GCN vs. NetMF Error Overlap (5 Seeds, 3 Datasets)
+
+The four GCN/NetMF correctness categories below are percentages of the 1,000-node test set.
+A “rescue” is a node GCN gets wrong and NetMF gets right.
+
+| Dataset | Both correct | Only GCN correct | Only NetMF correct (rescue) | Both wrong | Rescued nodes | GCN mistakes rescued |
+|---|---:|---:|---:|---:|---:|---:|
+| Cora | 62.18 ± 1.75 | 15.90 ± 2.01 | 6.22 ± 0.62 | 15.70 ± 0.84 | 62.20 ± 6.18 | 28.39 ± 2.85% |
+| CiteSeer | 37.60 ± 1.76 | 33.76 ± 1.65 | 5.32 ± 0.85 | 23.32 ± 1.27 | 53.20 ± 8.53 | 18.52 ± 2.19% |
+| PubMed | 65.24 ± 0.27 | 12.46 ± 1.58 | 6.24 ± 2.04 | 16.06 ± 1.85 | 62.40 ± 20.35 | 27.85 ± 8.62% |
+
+NetMF rescues about 53–62 GCN errors per seed. These rescues are strongly concentrated among
+low-confidence GCN nodes:
+
+| Dataset | Low-confidence share of NetMF rescues | Medium share | High share | Low-group GCN mistakes rescued |
+|---|---:|---:|---:|---:|
+| Cora | 67.51 ± 6.28% | 24.33 ± 5.07% | 8.15 ± 4.71% | 30.66 ± 6.15% |
+| CiteSeer | 59.35 ± 5.27% | 29.38 ± 6.66% | 11.27 ± 3.37% | 19.76 ± 3.29% |
+| PubMed | 70.02 ± 8.06% | 19.76 ± 5.59% | 10.22 ± 3.24% | 33.01 ± 8.61% |
+
+Because each confidence group contains approximately one third of test nodes, the 59–70% low
+share is not a group-size artifact. NetMF's rescue rate among GCN mistakes also declines toward
+the high-confidence group in every dataset. This identifies where complementarity exists, but it
+does not by itself provide a deployable rule for choosing NetMF: NetMF is much less accurate than
+GCN across the low-confidence group as a whole (section 0g).
+
+GraphSAGE was included as a secondary comparison. It rescues fewer GCN mistakes than NetMF:
+41.60 ± 20.62 nodes on Cora, 41.20 ± 13.42 on CiteSeer, and 39.80 ± 6.30 on PubMed. Its
+rescues are even more concentrated in the low-confidence group (72–81% across datasets), but
+its overall rescue rate among GCN mistakes is only 14.39–18.98%.
