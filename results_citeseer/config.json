@@ -26,11 +26,25 @@
   "weight_decay": 0.0005,
   "netmf_dim": 128,
   "netmf_window": 5,
+  "netmf_concat_scales": [
+    0.1,
+    0.3,
+    1.0
+  ],
   "device": "auto",
   "smoke": false,
   "resolved_device": "mps",
   "num_nodes": 3327,
   "num_edges": 9104,
   "num_features": 3703,
-  "num_classes": 6
+  "num_classes": 6,
+  "package_versions": {
+    "python": "3.13.5",
+    "torch": "2.15.0",
+    "torch_geometric": "2.8.1",
+    "numpy": "2.5.4",
+    "scipy": "1.18.1",
+    "scikit-learn": "1.9.1",
+    "pandas": "2.3.3"
+  }
 }

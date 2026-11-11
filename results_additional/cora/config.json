@@ -1,0 +1,47 @@
+{
+  "dataset": "Cora",
+  "data_root": "data",
+  "output_dir": "results_additional/cora",
+  "cache_dir": "cache",
+  "budgets": [
+    20
+  ],
+  "seeds": [
+    42
+  ],
+  "edge_drop_rates": [
+    0.0
+  ],
+  "epochs": 200,
+  "patience": 30,
+  "hidden_channels": 64,
+  "dropout": 0.5,
+  "lr": 0.01,
+  "weight_decay": 0.0005,
+  "netmf_dim": 128,
+  "netmf_window": 5,
+  "netmf_method": "exact",
+  "netmf_rank": 256,
+  "netmf_concat_scales": [
+    0.1,
+    0.3,
+    1.0
+  ],
+  "device": "auto",
+  "save_predictions": true,
+  "smoke": false,
+  "resolved_device": "mps",
+  "num_nodes": 2708,
+  "num_edges": 10556,
+  "num_features": 1433,
+  "num_classes": 7,
+  "package_versions": {
+    "python": "3.11.17",
+    "torch": "2.14.1",
+    "torch_geometric": "2.8.0.post1",
+    "numpy": "2.4.6",
+    "scipy": "1.17.1",
+    "scikit-learn": "1.9.1",
+    "pandas": "3.0.6"
+  }
+}

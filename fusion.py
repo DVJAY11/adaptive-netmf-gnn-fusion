@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import copy
 import time
+from dataclasses import dataclass
 
 import numpy as np
 import torch
@@ -272,6 +272,6 @@ def router_weight_summary(result: RouterResult, degrees: np.ndarray) -> list[dic
         if not np.any(mask):
             continue
         means = result.weights[mask].mean(axis=0)
-        for model, value in zip(("NetMF", "GCN", "GraphSAGE"), means):
+        for model, value in zip(("NetMF", "GCN", "GraphSAGE"), means, strict=True):
             rows.append({"degree_group": group, "base_model": model, "weight": float(value)})
     return rows

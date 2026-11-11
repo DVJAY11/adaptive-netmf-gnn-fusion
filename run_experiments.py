@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import time
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
@@ -26,6 +27,7 @@ from fusion import (
 )
 from models import GCN, MLP, GraphSAGE, resolve_device, seed_everything, train_model
 from netmf import load_or_compute_netmf
+from prediction_cache import save_prediction_cache
 
 
 def parse_args() -> argparse.Namespace:
@@ -47,7 +49,21 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--weight-decay", type=float, default=5e-4)
     parser.add_argument("--netmf-dim", type=int, default=128)
     parser.add_argument("--netmf-window", type=int, default=5)
+    parser.add_argument(
+        "--netmf-method", choices=["auto", "exact", "eigen"], default="auto",
+        help="exact sums walk powers (small graphs); eigen uses the top-rank "
+             "eigenpairs (large graphs); auto picks eigen above 10,000 nodes",
+    )
+    parser.add_argument("--netmf-rank", type=int, default=256,
+                        help="Eigenpairs used by the eigen NetMF method")
+    parser.add_argument(
+        "--netmf-concat-scales", type=float, nargs="+", default=[0.1, 0.3, 1.0],
+        help="Candidate NetMF block scales for NetMF_GCN, relative to the mean row "
+             "L2 norm of the original features; selected on validation accuracy",
+    )
     parser.add_argument("--device", default="auto", help="auto, cpu, cuda, cuda:0, or mps")
+    parser.add_argument("--save-predictions", action="store_true",
+                        help="Save all per-node prediction probabilities and split metadata as compressed NPZ files")
     parser.add_argument("--smoke", action="store_true", help="Run a short installation check")
     return parser.parse_args()
 
@@ -82,6 +98,35 @@ def drop_undirected_edges(edge_index: torch.Tensor, rate: float, seed: int) -> t
     generator = torch.Generator().manual_seed(seed)
     keep = torch.rand(pairs.size(1), generator=generator) >= rate
     return to_undirected(pairs[:, keep], num_nodes=int(edge_index.max()) + 1)
+
+
+def concat_netmf_features(x: torch.Tensor, embedding: np.ndarray, scale: float | None) -> torch.Tensor:
+    """Append NetMF columns to node features.
+
+    With ``scale=None`` the embedding is appended unchanged. Otherwise it is
+    multiplied so its mean row L2 norm equals ``scale`` times that of ``x``.
+    Without rescaling, the unit-norm NetMF rows dominate the row-normalized
+    bag-of-words features (row norm ~0.2 on Cora/CiteSeer).
+    """
+    netmf = torch.from_numpy(embedding).to(dtype=x.dtype)
+    if scale is not None:
+        x_norm = x.norm(dim=1).mean()
+        netmf_norm = netmf.norm(dim=1).mean().clamp_min(1e-12)
+        netmf = netmf * (scale * x_norm / netmf_norm)
+    return torch.cat([x, netmf], dim=1)
+
+
+def package_versions() -> dict[str, str]:
+    import platform
+    from importlib.metadata import PackageNotFoundError, version
+
+    versions = {"python": platform.python_version()}
+    for name in ("torch", "torch_geometric", "numpy", "scipy", "scikit-learn", "pandas"):
+        try:
+            versions[name] = version(name)
+        except PackageNotFoundError:
+            versions[name] = "not installed"
+    return versions
 
 
 def evaluate(probabilities: np.ndarray, labels: np.ndarray, mask: torch.Tensor) -> tuple[float, float]:
@@ -225,19 +270,220 @@ def summarize(raw: pd.DataFrame) -> pd.DataFrame:
     return summary.reset_index()
 
 
+@dataclass
+class Setting:
+    """One (seed, edge-drop rate, label budget) configuration and its data."""
+
+    args: argparse.Namespace
+    device: torch.device
+    graph: object
+    labels: np.ndarray
+    num_classes: int
+    degrees: np.ndarray
+    embedding: np.ndarray
+    netmf_seconds: float
+    seed: int
+    budget: int
+    edge_drop: float
+    train_mask: torch.Tensor
+    val_mask: torch.Tensor
+    test_mask: torch.Tensor
+    base_stop_mask: torch.Tensor
+    router_train: np.ndarray
+    router_stop: np.ndarray
+
+    @property
+    def keys(self) -> dict:
+        return {"dataset": self.args.dataset, "seed": self.seed, "budget": self.budget, "edge_drop": self.edge_drop}
+
+    def row(self, model: str, probabilities: np.ndarray, **extra) -> dict:
+        return result_row(
+            **self.keys, model=model, probabilities=probabilities, labels=self.labels,
+            val_mask=self.val_mask, test_mask=self.test_mask, **extra,
+        )
+
+    def train(self, model: torch.nn.Module, graph=None):
+        a = self.args
+        return train_model(
+            model, graph if graph is not None else self.graph, self.train_mask, self.base_stop_mask,
+            self.device, a.epochs, a.patience, a.lr, a.weight_decay,
+        )
+
+
+@dataclass
+class Outputs:
+    raw: list = field(default_factory=list)
+    weights: list = field(default_factory=list)
+    oracle: list = field(default_factory=list)
+    degree: list = field(default_factory=list)
+
+    def save(self, output_dir: Path) -> None:
+        pd.DataFrame(self.raw).to_csv(output_dir / "raw_results.csv", index=False)
+        pd.DataFrame(self.weights).to_csv(output_dir / "router_weights.csv", index=False)
+        pd.DataFrame(self.oracle).to_csv(output_dir / "oracle_analysis.csv", index=False)
+        pd.DataFrame(self.degree).to_csv(output_dir / "degree_group_results.csv", index=False)
+
+
+def print_row(row: dict, suffix: str = "") -> None:
+    print(f"{row['model']:12s} test_acc={row['test_accuracy']:.4f} macro_f1={row['test_macro_f1']:.4f}{suffix}")
+
+
+def prepare_graph(args: argparse.Namespace, original, seed: int, edge_drop: float):
+    """Drop edges for this seed and load or compute the matching NetMF embedding."""
+    graph = original.clone()
+    graph.edge_index = drop_undirected_edges(original.edge_index, edge_drop, seed)
+    degrees = degree(graph.edge_index[0], num_nodes=graph.num_nodes).cpu().numpy()
+    cache_seed = seed if edge_drop > 0 else 0  # the undamaged graph shares one embedding
+    suffix = f"_eig{args.netmf_rank}" if args.netmf_method == "eigen" else ""
+    cache_name = (
+        f"{args.dataset.lower()}_drop{edge_drop:.2f}_seed{cache_seed}_"
+        f"w{args.netmf_window}_d{args.netmf_dim}{suffix}.npy"
+    )
+    print(f"Preparing NetMF embedding for seed={seed}, edge_drop={edge_drop:.2f}")
+    embedding, seconds, cache_hit = load_or_compute_netmf(
+        graph.edge_index, graph.num_nodes, args.cache_dir / cache_name,
+        args.netmf_dim, args.netmf_window, cache_seed,
+        method=args.netmf_method, rank=args.netmf_rank,
+    )
+    print(f"NetMF {'cache hit' if cache_hit else 'computed'}; preprocessing={seconds:.2f}s")
+    return graph, degrees, embedding, seconds
+
+
+def train_base_models(st: Setting, out: Outputs) -> dict[str, np.ndarray]:
+    """Train MLP, GCN and GraphSAGE on the word features."""
+    a, g = st.args, st.graph
+    probabilities = {}
+    for name, cls in (("MLP", MLP), ("GCN", GCN), ("GraphSAGE", GraphSAGE)):
+        seed_everything(st.seed)
+        trained = st.train(cls(g.num_features, a.hidden_channels, st.num_classes, a.dropout))
+        probabilities[name] = trained.probabilities
+        row = st.row(name, trained.probabilities, train_seconds=trained.train_seconds,
+                     peak_memory_mb=trained.peak_memory_mb, best_epoch=trained.best_epoch)
+        out.raw.append(row)
+        print_row(row)
+    return probabilities
+
+
+def train_netmf_gcn(st: Setting, scale: float | None):
+    a = st.args
+    graph = st.graph.clone()
+    graph.x = concat_netmf_features(st.graph.x, st.embedding, scale)
+    seed_everything(st.seed)
+    return st.train(GCN(graph.num_features, a.hidden_channels, st.num_classes, a.dropout), graph)
+
+
+def train_feature_fusion(st: Setting, out: Outputs) -> dict[str, np.ndarray]:
+    """NetMF + GCN concatenation: the unscaled original and the validation-tuned scaled version."""
+    unscaled = train_netmf_gcn(st, None)
+    unscaled_row = st.row("NetMF_GCN_Unscaled", unscaled.probabilities, train_seconds=unscaled.train_seconds,
+                          preprocess_seconds=st.netmf_seconds, peak_memory_mb=unscaled.peak_memory_mb,
+                          best_epoch=unscaled.best_epoch)
+    out.raw.append(unscaled_row)
+
+    best_scale, best_val, best, total_seconds = None, -1.0, None, 0.0
+    for scale in st.args.netmf_concat_scales:
+        candidate = train_netmf_gcn(st, scale)
+        total_seconds += candidate.train_seconds
+        score, _ = evaluate(candidate.probabilities, st.labels, st.base_stop_mask)
+        if score > best_val + 1e-8:
+            best_scale, best_val, best = scale, score, candidate
+    row = st.row("NetMF_GCN", best.probabilities, train_seconds=total_seconds,
+                 preprocess_seconds=st.netmf_seconds, peak_memory_mb=best.peak_memory_mb,
+                 best_epoch=best.best_epoch)
+    row["netmf_scale"] = best_scale
+    out.raw.append(row)
+    print_row(row, f" scale={best_scale} (unscaled test_acc={unscaled_row['test_accuracy']:.4f})")
+    return {"NetMF_GCN_Unscaled": unscaled.probabilities, "NetMF_GCN": best.probabilities}
+
+
+def train_netmf_classifier(st: Setting, out: Outputs) -> np.ndarray:
+    train = st.train_mask.numpy()
+    classifier = LogisticRegression(max_iter=2000, random_state=st.seed)
+    start = time.perf_counter()
+    classifier.fit(st.embedding[train], st.labels[train])
+    seconds = time.perf_counter() - start
+    probabilities = classifier.predict_proba(st.embedding)
+    row = st.row("NetMF", probabilities, train_seconds=seconds, preprocess_seconds=st.netmf_seconds)
+    out.raw.append(row)
+    print_row(row)
+    return probabilities
+
+
+def fuse_predictions(st: Setting, out: Outputs, experts: list[np.ndarray]) -> dict[str, np.ndarray]:
+    """Equal average, degree router, the three learned routers and the oracle."""
+    fused = {"EqualAverage": equal_average(experts)}
+    routed = degree_router(experts, st.degrees)
+    fused["DegreeRouter"] = routed.probabilities
+    routers = {"DegreeRouter": routed}
+    for feature_set, name in (("degree", "LearnedRouterDegree"), ("confidence", "LearnedRouterConfidence"),
+                              ("all", "LearnedRouter")):
+        routers[name] = learned_router(experts, st.degrees, st.labels, st.router_train, st.router_stop,
+                                       seed=st.seed, device=st.device, feature_set=feature_set)
+        fused[name] = routers[name].probabilities
+    oracle = oracle_best_expert(experts, st.labels)
+    fused["OracleUpperBound"] = oracle.probabilities
+
+    for name, probabilities in fused.items():
+        extra = {"train_seconds": 0.0}
+        if name.startswith("LearnedRouter"):
+            extra = {"train_seconds": routers[name].train_seconds, "best_epoch": routers[name].best_epoch}
+        row = st.row(name, probabilities, **extra)
+        out.raw.append(row)
+        if name in ("EqualAverage", "DegreeRouter", "LearnedRouter", "OracleUpperBound"):
+            print_row(row)
+
+    out.oracle.extend(oracle_analysis_rows(**st.keys, probabilities=experts, labels=st.labels,
+                                           val_mask=st.val_mask, test_mask=st.test_mask))
+    for name, result in routers.items():
+        out.weights.extend({**st.keys, "router": name, **item} for item in router_weight_summary(result, st.degrees))
+    return fused
+
+
+def run_setting(st: Setting, out: Outputs) -> None:
+    probabilities = train_base_models(st, out)
+    probabilities.update(train_feature_fusion(st, out))
+    probabilities["NetMF"] = train_netmf_classifier(st, out)
+    experts = [probabilities["NetMF"], probabilities["GCN"], probabilities["GraphSAGE"]]
+    probabilities.update(fuse_predictions(st, out, experts))
+    out.degree.extend(degree_group_rows(**st.keys, probabilities=probabilities, labels=st.labels,
+                                        test_mask=st.test_mask, degrees=st.degrees))
+    if st.args.save_predictions:
+        path = save_prediction_cache(
+            output_dir=st.args.output_dir, **st.keys,
+            probabilities=probabilities, labels=st.labels, degrees=st.degrees,
+            train_mask=st.train_mask.cpu().numpy(),
+            val_mask=st.val_mask.cpu().numpy(), test_mask=st.test_mask.cpu().numpy(),
+            base_stop_mask=st.base_stop_mask.cpu().numpy(),
+            router_train_mask=st.router_train, router_stop_mask=st.router_stop,
+        )
+        print(f"Predictions: {path}")
+
+
+def apply_smoke_settings(args: argparse.Namespace) -> None:
+    if args.output_dir == Path("results"):
+        args.output_dir = Path("results_smoke")
+    args.budgets, args.seeds, args.edge_drop_rates = [5], [42], [0.0]
+    args.epochs, args.patience, args.hidden_channels = 5, 2, 16
+    args.netmf_dim, args.netmf_window = 32, 2
+
+
+def write_config(args: argparse.Namespace, device: torch.device, data, num_classes: int) -> None:
+    config = {key: str(value) if isinstance(value, Path) else value for key, value in vars(args).items()}
+    config.update({
+        "resolved_device": str(device),
+        "num_nodes": data.num_nodes,
+        "num_edges": data.num_edges,
+        "num_features": data.num_features,
+        "num_classes": num_classes,
+        "package_versions": package_versions(),
+    })
+    (args.output_dir / "config.json").write_text(json.dumps(config, indent=2) + "\n")
+
+
 def main() -> None:
     args = parse_args()
     if args.smoke:
-        if args.output_dir == Path("results"):
-            args.output_dir = Path("results_smoke")
-        args.budgets = [5]
-        args.seeds = [42]
-        args.edge_drop_rates = [0.0]
-        args.epochs = 5
-        args.patience = 2
-        args.hidden_channels = 16
-        args.netmf_dim = 32
-        args.netmf_window = 2
+        apply_smoke_settings(args)
     if any(budget < 1 for budget in args.budgets):
         raise ValueError("All label budgets must be positive")
 
@@ -249,220 +495,29 @@ def main() -> None:
     original = dataset[0]
     original.y = original.y.view(-1)
     labels = original.y.cpu().numpy()
-    num_classes = dataset.num_classes
-    raw_rows: list[dict] = []
-    weight_rows: list[dict] = []
-    oracle_rows: list[dict] = []
-    degree_rows: list[dict] = []
+    if args.netmf_method == "auto":
+        args.netmf_method = "eigen" if original.num_nodes > 10_000 else "exact"
+    write_config(args, device, original, dataset.num_classes)
 
-    config = vars(args).copy()
-    config.update({
-        "data_root": str(args.data_root),
-        "output_dir": str(args.output_dir),
-        "cache_dir": str(args.cache_dir),
-        "resolved_device": str(device),
-        "num_nodes": original.num_nodes,
-        "num_edges": original.num_edges,
-        "num_features": original.num_features,
-        "num_classes": num_classes,
-    })
-    (args.output_dir / "config.json").write_text(json.dumps(config, indent=2) + "\n")
-
+    out = Outputs()
     for seed in args.seeds:
         for edge_drop in args.edge_drop_rates:
-            graph = original.clone()
-            graph.edge_index = drop_undirected_edges(original.edge_index, edge_drop, seed)
-            deg = degree(graph.edge_index[0], num_nodes=graph.num_nodes).cpu().numpy()
-            cache_seed = seed if edge_drop > 0 else 0
-            cache_name = (
-                f"{args.dataset.lower()}_drop{edge_drop:.2f}_seed{cache_seed}_"
-                f"w{args.netmf_window}_d{args.netmf_dim}.npy"
-            )
-            print(f"Preparing NetMF embedding for seed={seed}, edge_drop={edge_drop:.2f}")
-            embedding, netmf_preprocess, cache_hit = load_or_compute_netmf(
-                graph.edge_index,
-                graph.num_nodes,
-                args.cache_dir / cache_name,
-                args.netmf_dim,
-                args.netmf_window,
-                cache_seed,
-            )
-            print(
-                f"NetMF {'cache hit' if cache_hit else 'computed'}; "
-                f"preprocessing={netmf_preprocess:.2f}s"
-            )
-
+            graph, degrees, embedding, netmf_seconds = prepare_graph(args, original, seed, edge_drop)
             for budget in args.budgets:
                 print(f"\nseed={seed} budget={budget} edge_drop={edge_drop:.2f}")
                 train_mask, val_mask, test_mask = make_limited_label_masks(graph, budget, seed)
-                base_stop_mask, router_train, router_stop = split_validation_masks(
-                    labels, val_mask, seed
+                base_stop, router_train, router_stop = split_validation_masks(labels, val_mask, seed)
+                setting = Setting(
+                    args=args, device=device, graph=graph, labels=labels, num_classes=dataset.num_classes,
+                    degrees=degrees, embedding=embedding, netmf_seconds=netmf_seconds,
+                    seed=seed, budget=budget, edge_drop=edge_drop, train_mask=train_mask,
+                    val_mask=val_mask, test_mask=test_mask, base_stop_mask=base_stop,
+                    router_train=router_train, router_stop=router_stop,
                 )
-                seed_everything(seed)
-                probabilities: dict[str, np.ndarray] = {}
+                run_setting(setting, out)
+                out.save(args.output_dir)  # save after every setting so long runs can be inspected
 
-                model_builders = {
-                    "MLP": lambda: MLP(graph.num_features, args.hidden_channels, num_classes, args.dropout),
-                    "GCN": lambda: GCN(graph.num_features, args.hidden_channels, num_classes, args.dropout),
-                    "GraphSAGE": lambda: GraphSAGE(graph.num_features, args.hidden_channels, num_classes, args.dropout),
-                }
-                for model_name, builder in model_builders.items():
-                    seed_everything(seed)
-                    trained = train_model(
-                        builder(), graph, train_mask, base_stop_mask, device,
-                        args.epochs, args.patience, args.lr, args.weight_decay,
-                    )
-                    probabilities[model_name] = trained.probabilities
-                    row = result_row(
-                        dataset=args.dataset, seed=seed, budget=budget, edge_drop=edge_drop,
-                        model=model_name, probabilities=trained.probabilities, labels=labels,
-                        val_mask=val_mask, test_mask=test_mask,
-                        train_seconds=trained.train_seconds,
-                        peak_memory_mb=trained.peak_memory_mb,
-                        best_epoch=trained.best_epoch,
-                    )
-                    raw_rows.append(row)
-                    print(
-                        f"{model_name:12s} test_acc={row['test_accuracy']:.4f} "
-                        f"macro_f1={row['test_macro_f1']:.4f}"
-                    )
-
-                concat_graph = graph.clone()
-                netmf_features = torch.from_numpy(embedding).to(dtype=graph.x.dtype)
-                concat_graph.x = torch.cat([graph.x, netmf_features], dim=1)
-                seed_everything(seed)
-                concat_trained = train_model(
-                    GCN(concat_graph.num_features, args.hidden_channels, num_classes, args.dropout),
-                    concat_graph, train_mask, base_stop_mask, device,
-                    args.epochs, args.patience, args.lr, args.weight_decay,
-                )
-                probabilities["NetMF_GCN"] = concat_trained.probabilities
-                concat_row = result_row(
-                    dataset=args.dataset, seed=seed, budget=budget, edge_drop=edge_drop,
-                    model="NetMF_GCN", probabilities=concat_trained.probabilities,
-                    labels=labels, val_mask=val_mask, test_mask=test_mask,
-                    train_seconds=concat_trained.train_seconds,
-                    preprocess_seconds=netmf_preprocess,
-                    peak_memory_mb=concat_trained.peak_memory_mb,
-                    best_epoch=concat_trained.best_epoch,
-                )
-                raw_rows.append(concat_row)
-                print(
-                    f"{'NetMF_GCN':12s} test_acc={concat_row['test_accuracy']:.4f} "
-                    f"macro_f1={concat_row['test_macro_f1']:.4f}"
-                )
-
-                classifier = LogisticRegression(max_iter=2000, random_state=seed)
-                start = time.perf_counter()
-                classifier.fit(embedding[train_mask.numpy()], labels[train_mask.numpy()])
-                netmf_train = time.perf_counter() - start
-                probabilities["NetMF"] = classifier.predict_proba(embedding)
-                netmf_row = result_row(
-                    dataset=args.dataset, seed=seed, budget=budget, edge_drop=edge_drop,
-                    model="NetMF", probabilities=probabilities["NetMF"], labels=labels,
-                    val_mask=val_mask, test_mask=test_mask, train_seconds=netmf_train,
-                    preprocess_seconds=netmf_preprocess,
-                )
-                raw_rows.append(netmf_row)
-                print(
-                    f"{'NetMF':12s} test_acc={netmf_row['test_accuracy']:.4f} "
-                    f"macro_f1={netmf_row['test_macro_f1']:.4f}"
-                )
-
-                fusion_inputs = [probabilities["NetMF"], probabilities["GCN"], probabilities["GraphSAGE"]]
-                equal = equal_average(fusion_inputs)
-                equal_row = result_row(
-                    dataset=args.dataset, seed=seed, budget=budget, edge_drop=edge_drop,
-                    model="EqualAverage", probabilities=equal, labels=labels,
-                    val_mask=val_mask, test_mask=test_mask, train_seconds=0.0,
-                )
-                raw_rows.append(equal_row)
-
-                routed = degree_router(fusion_inputs, deg)
-                router_row = result_row(
-                    dataset=args.dataset, seed=seed, budget=budget, edge_drop=edge_drop,
-                    model="DegreeRouter", probabilities=routed.probabilities, labels=labels,
-                    val_mask=val_mask, test_mask=test_mask, train_seconds=0.0,
-                )
-                raw_rows.append(router_row)
-
-                learned_results = {}
-                for feature_set, model_name in (
-                    ("degree", "LearnedRouterDegree"),
-                    ("confidence", "LearnedRouterConfidence"),
-                    ("all", "LearnedRouter"),
-                ):
-                    learned = learned_router(
-                        fusion_inputs, deg, labels, router_train, router_stop,
-                        seed=seed, device=device, feature_set=feature_set,
-                    )
-                    learned_results[model_name] = learned
-                    learned_row = result_row(
-                        dataset=args.dataset, seed=seed, budget=budget, edge_drop=edge_drop,
-                        model=model_name, probabilities=learned.probabilities,
-                        labels=labels, val_mask=val_mask, test_mask=test_mask,
-                        train_seconds=learned.train_seconds, best_epoch=learned.best_epoch,
-                    )
-                    raw_rows.append(learned_row)
-
-                oracle = oracle_best_expert(fusion_inputs, labels)
-                oracle_row = result_row(
-                    dataset=args.dataset, seed=seed, budget=budget, edge_drop=edge_drop,
-                    model="OracleUpperBound", probabilities=oracle.probabilities,
-                    labels=labels, val_mask=val_mask, test_mask=test_mask,
-                    train_seconds=0.0,
-                )
-                raw_rows.append(oracle_row)
-                oracle_rows.extend(oracle_analysis_rows(
-                    dataset=args.dataset, seed=seed, budget=budget,
-                    edge_drop=edge_drop, probabilities=fusion_inputs, labels=labels,
-                    val_mask=val_mask, test_mask=test_mask,
-                ))
-                print(
-                    f"{'EqualAverage':12s} test_acc={equal_row['test_accuracy']:.4f}\n"
-                    f"{'DegreeRouter':12s} test_acc={router_row['test_accuracy']:.4f}\n"
-                    f"{'LearnedRouter':12s} test_acc="
-                    f"{raw_rows[-2]['test_accuracy']:.4f}\n"
-                    f"{'Oracle':12s} test_acc={oracle_row['test_accuracy']:.4f}"
-                )
-                for item in router_weight_summary(routed, deg):
-                    weight_rows.append({
-                        "dataset": args.dataset,
-                        "seed": seed,
-                        "budget": budget,
-                        "edge_drop": edge_drop,
-                        "router": "DegreeRouter",
-                        **item,
-                    })
-                for model_name, learned_result in learned_results.items():
-                    for item in router_weight_summary(learned_result, deg):
-                        weight_rows.append({
-                            "dataset": args.dataset, "seed": seed,
-                            "budget": budget, "edge_drop": edge_drop,
-                            "router": model_name, **item,
-                        })
-
-                evaluated = {
-                    **probabilities,
-                    "EqualAverage": equal,
-                    "DegreeRouter": routed.probabilities,
-                    **{name: result.probabilities for name, result in learned_results.items()},
-                    "OracleUpperBound": oracle.probabilities,
-                }
-                degree_rows.extend(degree_group_rows(
-                    dataset=args.dataset, seed=seed, budget=budget,
-                    edge_drop=edge_drop, probabilities=evaluated, labels=labels,
-                    test_mask=test_mask, degrees=deg,
-                ))
-
-                pd.DataFrame(raw_rows).to_csv(args.output_dir / "raw_results.csv", index=False)
-                pd.DataFrame(weight_rows).to_csv(args.output_dir / "router_weights.csv", index=False)
-                pd.DataFrame(oracle_rows).to_csv(args.output_dir / "oracle_analysis.csv", index=False)
-                pd.DataFrame(degree_rows).to_csv(args.output_dir / "degree_group_results.csv", index=False)
-
-    raw = pd.DataFrame(raw_rows)
-    summary = summarize(raw)
-    summary.to_csv(args.output_dir / "summary.csv", index=False)
+    summarize(pd.DataFrame(out.raw)).to_csv(args.output_dir / "summary.csv", index=False)
     print(f"\nRaw results: {(args.output_dir / 'raw_results.csv').resolve()}")
     print(f"Summary:     {(args.output_dir / 'summary.csv').resolve()}")
     print("Run plot_results.py next to generate figures.")

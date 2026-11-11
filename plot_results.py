@@ -12,7 +12,6 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import pandas as pd
 
-
 COLORS = {
     "MLP": "#6B7280",
     "NetMF": "#2563EB",
@@ -21,6 +20,7 @@ COLORS = {
     "EqualAverage": "#8B5CF6",
     "DegreeRouter": "#C84B31",
     "NetMF_GCN": "#0E7490",
+    "NetMF_GCN_Unscaled": "#94A3B8",
     "LearnedRouter": "#DB2777",
     "LearnedRouterDegree": "#F97316",
     "LearnedRouterConfidence": "#EC4899",
@@ -73,13 +73,14 @@ def model_comparison(raw: pd.DataFrame, output: Path) -> None:
         color=[COLORS[name] for name in grouped.index],
     )
     ax.bar_label(bars, fmt="%.3f", padding=3)
-    ax.set_ylim(max(0, grouped["mean"].min() - 0.12), min(1.0, grouped["mean"].max() + 0.08))
+    top = max(grouped["mean"].max(), oracle if pd.notna(oracle) else 0.0)
+    ax.set_ylim(max(0, grouped["mean"].min() - 0.12), min(1.0, top + 0.05))
     ax.set_ylabel("Test accuracy")
     ax.set_title(f"Model comparison at {int(subset['budget'].max())} labels per class")
     if pd.notna(oracle):
         ax.axhline(oracle, linestyle="--", color="#111827", linewidth=1.5, label="Oracle upper bound")
         ax.legend(frameon=False)
-    ax.tick_params(axis="x", rotation=20)
+    plt.setp(ax.get_xticklabels(), rotation=30, ha="right", rotation_mode="anchor")
     ax.grid(axis="y", alpha=0.25)
     fig.tight_layout()
     fig.savefig(output, dpi=180)
@@ -132,7 +133,7 @@ def router_weights(weights: pd.DataFrame, output: Path) -> None:
         weights = weights.assign(router="DegreeRouter")
     routers = list(weights["router"].drop_duplicates())
     fig, axes = plt.subplots(1, len(routers), figsize=(7 * len(routers), 5), squeeze=False)
-    for ax, router in zip(axes[0], routers):
+    for ax, router in zip(axes[0], routers, strict=True):
         selected = weights[weights["router"] == router]
         grouped = selected.groupby(["degree_group", "base_model"])["weight"].mean().unstack()
         grouped = grouped.reindex(order).dropna(how="all")

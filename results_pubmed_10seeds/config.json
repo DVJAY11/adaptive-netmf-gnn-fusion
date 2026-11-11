@@ -1,0 +1,57 @@
+{
+  "dataset": "PubMed",
+  "data_root": "data",
+  "output_dir": "results_pubmed_10seeds",
+  "cache_dir": "cache_pubmed",
+  "budgets": [
+    5,
+    10,
+    20
+  ],
+  "seeds": [
+    42,
+    43,
+    44,
+    45,
+    46,
+    47,
+    48,
+    49,
+    50,
+    51
+  ],
+  "edge_drop_rates": [
+    0.0
+  ],
+  "epochs": 200,
+  "patience": 30,
+  "hidden_channels": 64,
+  "dropout": 0.5,
+  "lr": 0.01,
+  "weight_decay": 0.0005,
+  "netmf_dim": 128,
+  "netmf_window": 5,
+  "netmf_method": "eigen",
+  "netmf_rank": 256,
+  "netmf_concat_scales": [
+    0.1,
+    0.3,
+    1.0
+  ],
+  "device": "auto",
+  "smoke": false,
+  "resolved_device": "mps",
+  "num_nodes": 19717,
+  "num_edges": 88648,
+  "num_features": 500,
+  "num_classes": 3,
+  "package_versions": {
+    "python": "3.13.5",
+    "torch": "2.15.0",
+    "torch_geometric": "2.8.1",
+    "numpy": "2.5.4",
+    "scipy": "1.18.1",
+    "scikit-learn": "1.9.1",
+    "pandas": "2.3.3"
+  }
+}

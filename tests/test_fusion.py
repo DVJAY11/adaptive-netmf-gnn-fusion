@@ -1,11 +1,10 @@
 import unittest
 
 import numpy as np
-
 import torch
 
 from fusion import build_router_features, degree_router, equal_average, learned_router, oracle_best_expert
-from run_experiments import split_validation_masks
+from run_experiments import concat_netmf_features, split_validation_masks
 
 
 class FusionTests(unittest.TestCase):
@@ -70,6 +69,35 @@ class FusionTests(unittest.TestCase):
         self.assertFalse(np.any(base & router_stop))
         self.assertFalse(np.any(router_train & router_stop))
         np.testing.assert_array_equal(base | router_train | router_stop, official.numpy())
+
+    def test_eigen_netmf_embedding_shape_and_norm(self):
+        from netmf import compute_netmf_embedding_eigen
+
+        rng = np.random.default_rng(0)
+        pairs = rng.integers(0, 60, size=(2, 300))
+        edge_index = torch.from_numpy(np.concatenate([pairs, pairs[::-1]], axis=1))
+        embedding = compute_netmf_embedding_eigen(
+            edge_index, 60, dimension=8, window=3, rank=16, seed=0, block_rows=7
+        )
+        self.assertEqual(embedding.shape, (60, 8))
+        self.assertTrue(np.all(np.isfinite(embedding)))
+        np.testing.assert_allclose(np.linalg.norm(embedding, axis=1), 1.0, atol=1e-5)
+
+    def test_netmf_concat_scaling(self):
+        x = torch.rand(6, 10)
+        x = x / x.sum(dim=1, keepdim=True)
+        embedding = np.random.default_rng(0).normal(size=(6, 4)).astype(np.float32)
+        embedding /= np.linalg.norm(embedding, axis=1, keepdims=True)
+
+        unscaled = concat_netmf_features(x, embedding, None)
+        self.assertEqual(unscaled.shape, (6, 14))
+        torch.testing.assert_close(unscaled[:, :10], x)
+        np.testing.assert_allclose(unscaled[:, 10:].numpy(), embedding)
+
+        scaled = concat_netmf_features(x, embedding, 0.3)
+        torch.testing.assert_close(scaled[:, :10], x)
+        expected = 0.3 * x.norm(dim=1).mean()
+        torch.testing.assert_close(scaled[:, 10:].norm(dim=1).mean(), expected)
 
 
 if __name__ == "__main__":

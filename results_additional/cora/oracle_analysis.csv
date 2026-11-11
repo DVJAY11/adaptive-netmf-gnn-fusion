@@ -1,0 +1,3 @@
+dataset,seed,budget,edge_drop,split,oracle_accuracy,all_experts_agree_rate,netmf_unique_correct_rate,gcn_unique_correct_rate,graphsage_unique_correct_rate
+Cora,42,20,0.0,validation,0.862,0.64,0.058,0.02,0.022
+Cora,42,20,0.0,test,0.864,0.652,0.055,0.026,0.017
