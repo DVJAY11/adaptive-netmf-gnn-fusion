@@ -326,3 +326,25 @@ says this; the table above is direct evidence.
    cross-fitting expert predictions on the training nodes) or regularize it toward equal
    weights, since it currently collapses to GCN/GraphSAGE.
 5. Implement the large-graph NetMF approximation before running PubMed.
+
+
+## 0e. Pairwise Oracle Analysis (2026-11-10)
+
+Cora, seed 42, 20 labels/class, 1,000 test nodes.
+
+| Combination | Oracle accuracy | Gain | Rescued nodes |
+|---|---:|---:|---:|
+| GCN + NetMF | 84.7% | +6.4 pp | 64 |
+| GCN + GraphSAGE | 80.9% | +2.6 pp | 26 |
+| NetMF + GraphSAGE | 83.8% | +6.9 pp | 69 |
+| All three | 86.4% | +8.1 pp | 81 |
+
+### Key findings
+- NetMF is the weakest individual model (65.6%) but rescues 64 nodes GCN misclassifies.
+- GCN + NetMF has greater oracle potential than GCN + GraphSAGE (84.7% vs. 80.9%).
+- GraphSAGE contributes 17 additional correct predictions beyond GCN + NetMF.
+- The models have complementary strengths, but our learned router cannot reliably exploit them.
+- Oracle accuracy is a theoretical upper bound, not deployable accuracy.
+
+### Limitation
+Results are from one seed. Multiple seeds are needed to verify whether these findings are consistent.
