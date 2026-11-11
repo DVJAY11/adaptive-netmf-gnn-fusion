@@ -328,23 +328,53 @@ says this; the table above is direct evidence.
 5. Implement the large-graph NetMF approximation before running PubMed.
 
 
-## 0e. Pairwise Oracle Analysis (2026-11-10)
 
-Cora, seed 42, 20 labels/class, 1,000 test nodes.
+## 0e. Pairwise Oracle Analysis (5 Seeds, 3 Datasets)
 
-| Combination | Oracle accuracy | Gain | Rescued nodes |
+Seeds 42–46, 20 labels/class, 1,000 test nodes per run.
+
+| Combination | Cora | CiteSeer | PubMed |
 |---|---:|---:|---:|
-| GCN + NetMF | 84.7% | +6.4 pp | 64 |
-| GCN + GraphSAGE | 80.9% | +2.6 pp | 26 |
-| NetMF + GraphSAGE | 83.8% | +6.9 pp | 69 |
-| All three | 86.4% | +8.1 pp | 81 |
+| GCN + NetMF | 84.30 ± 0.84 | 76.68 ± 1.27 | 83.94 ± 1.85 |
+| GCN + GraphSAGE | 82.24 ± 2.11 | 75.48 ± 2.00 | 81.68 ± 1.14 |
+| NetMF + GraphSAGE | 83.06 ± 1.27 | 74.54 ± 1.48 | 83.14 ± 1.50 |
+| All three | 86.48 ± 1.51 | 79.70 ± 1.82 | 86.00 ± 1.76 |
 
 ### Key findings
-- NetMF is the weakest individual model (65.6%) but rescues 64 nodes GCN misclassifies.
-- GCN + NetMF has greater oracle potential than GCN + GraphSAGE (84.7% vs. 80.9%).
-- GraphSAGE contributes 17 additional correct predictions beyond GCN + NetMF.
-- The models have complementary strengths, but our learned router cannot reliably exploit them.
-- Oracle accuracy is a theoretical upper bound, not deployable accuracy.
+- GCN + NetMF had higher oracle accuracy than GCN + GraphSAGE in 13 of 15 runs.
+- NetMF provides complementary predictions despite its weaker individual accuracy.
+- The three-model oracle offers approximately 8.3–8.4 percentage points of headroom over the best individual model.
+- Higher individual model accuracy does not necessarily imply greater fusion value.
+- The challenge remains learning when to trust each expert without using test labels.
 
-### Limitation
-Results are from one seed. Multiple seeds are needed to verify whether these findings are consistent.
+### Limitations
+Oracle accuracy is a theoretical upper bound, not achievable model performance. Results use five seeds and one label budget, so broader generalization requires additional evaluation.
+
+
+## 0f. Weighted Prediction Averaging (2026-11-10)
+
+**Single-seed experiment:** Cora, seed 42, 20 labels/class. Fixed probability weights were
+searched in steps of 0.1 using only the 500-node saved validation mask; the selected weights
+were then evaluated once on the 1,000-node test mask. No models were retrained.
+
+| Method | Selected weights (GCN / NetMF / GraphSAGE) | Validation | Test |
+|---|---:|---:|---:|
+| Weighted GCN + NetMF | 0.4 / 0.6 / 0.0 | 78.8% | **78.5%** |
+| Weighted GCN + GraphSAGE | 1.0 / 0.0 / 0.0 | 77.4% | 78.3% |
+| Weighted all three | 0.4 / 0.6 / 0.0 | 78.8% | **78.5%** |
+| GCN | 1.0 / 0.0 / 0.0 | 77.4% | 78.3% |
+| EqualAverage | 1/3 / 1/3 / 1/3 | 76.4% | 77.1% |
+| LearnedRouter | node-dependent | 75.8%* | 76.9% |
+
+The best validation-selected fixed average is 0.4 GCN + 0.6 NetMF. It reaches 78.5% test
+accuracy, 0.2 percentage points above GCN, 1.4 points above equal averaging, and 1.6 points
+above the learned router in this seed. Adding GraphSAGE does not help the validation search:
+the selected three-model candidate gives it zero weight. Likewise, the GCN + GraphSAGE search
+selects pure GCN. These small single-seed differences do not establish a general improvement;
+multiple seeds are required.
+
+\* The learned router's validation accuracy is not directly comparable to validation-tuned
+averaging. It was fit on 149 router-training nodes and early-stopped on 103 router-stop nodes,
+all of which are included in the 500-node validation mask used to report 75.8%. Its held-out
+test accuracy is comparable. The fixed-weight validation score is also a selection score rather
+than performance on an untouched split.

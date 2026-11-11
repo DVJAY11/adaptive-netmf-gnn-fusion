@@ -1,3 +1,11 @@
 dataset,seed,budget,edge_drop,split,oracle_accuracy,all_experts_agree_rate,netmf_unique_correct_rate,gcn_unique_correct_rate,graphsage_unique_correct_rate
 Cora,42,20,0.0,validation,0.862,0.64,0.058,0.02,0.022
 Cora,42,20,0.0,test,0.864,0.652,0.055,0.026,0.017
+Cora,43,20,0.0,validation,0.886,0.65,0.06,0.034,0.014
+Cora,43,20,0.0,test,0.869,0.678,0.04,0.032,0.02
+Cora,44,20,0.0,validation,0.85,0.696,0.038,0.02,0.02
+Cora,44,20,0.0,test,0.852,0.703,0.049,0.036,0.017
+Cora,45,20,0.0,validation,0.856,0.638,0.042,0.032,0.032
+Cora,45,20,0.0,test,0.851,0.681,0.036,0.033,0.018
+Cora,46,20,0.0,validation,0.908,0.642,0.034,0.028,0.038
+Cora,46,20,0.0,test,0.888,0.647,0.032,0.044,0.037

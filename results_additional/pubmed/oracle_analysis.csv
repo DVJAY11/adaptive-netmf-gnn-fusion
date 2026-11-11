@@ -1,0 +1,11 @@
+dataset,seed,budget,edge_drop,split,oracle_accuracy,all_experts_agree_rate,netmf_unique_correct_rate,gcn_unique_correct_rate,graphsage_unique_correct_rate
+PubMed,42,20,0.0,validation,0.9,0.722,0.042,0.028,0.014
+PubMed,42,20,0.0,test,0.88,0.716,0.046,0.038,0.016
+PubMed,43,20,0.0,validation,0.906,0.712,0.048,0.028,0.024
+PubMed,43,20,0.0,test,0.872,0.718,0.055,0.033,0.027
+PubMed,44,20,0.0,validation,0.856,0.748,0.024,0.014,0.026
+PubMed,44,20,0.0,test,0.838,0.748,0.018,0.029,0.022
+PubMed,45,20,0.0,validation,0.886,0.734,0.044,0.016,0.026
+PubMed,45,20,0.0,test,0.864,0.725,0.056,0.02,0.019
+PubMed,46,20,0.0,validation,0.886,0.724,0.046,0.018,0.032
+PubMed,46,20,0.0,test,0.846,0.731,0.041,0.023,0.019
